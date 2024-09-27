@@ -4,11 +4,15 @@
 \alias{espn_draft}
 \title{Get ADP/AAV data from ESPN}
 \usage{
-espn_draft()
+espn_draft(metric = c("adp", "aav"))
+}
+\arguments{
+\item{metric}{Indicates whether APD or AAV data is scraped. By default, ADP
+data is scraped. Set it to \code{"aav"} to scrape AAV data.}
 }
 \value{
-A \link{data.frame} with the results. Contains both ADP and AAV
+A \link{data.frame} with the results.
 }
 \description{
-This function scrapes ADP and AAV data from ESPN
+This function scrapes ADP or AAV data from ESPN
 }

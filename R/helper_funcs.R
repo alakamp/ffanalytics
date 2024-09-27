@@ -1,120 +1,320 @@
-make_df_colnames <- function(tbl){
-  rm_txt <- c("DEFENSIVE PLAYERS ", "PLAYERS ", "KICKERS ", "[[:cntrl:]]",
-              "Sort", "First:", "Last:", "^Projected ", "\\sWeek [0-9]+",
-              "\\sWild Card", "\\sDivisional", "\\sConference",  "\\sSuper Bowl",
-              "[^[:alnum:]]$")
-  rm_pattern <- paste(rm_txt, collapse = "|")
-  cnames <- str_trim(paste(names(tbl), tbl[1,]))
-  cnames <- str_trim(gsub(rm_pattern, "", cnames))
-  cnames[which(nchar(cnames) == 0)] <- "Z"
-  return(make.unique(cnames, sep = ""))
-}
 
-num_header_rows <- function(html_pg, tbl_css){
-  header_rows <- html_pg %>% html_node(tbl_css) %>%
-    html_node("thead") %>% html_children() %>% length()
 
-  return(header_rows)
-}
 
-check_2rth <- function(tbl){
-  nm <- names(tbl)
+get_mfl_id = function(id_col = NULL, player_name = NULL, first = NULL,
+                      last = NULL, pos = NULL, team = NULL) {
+  l_p_info = list(
+    player_name = player_name,
+    first = first,
+    last = last,
+    pos = pos,
+    team = team,
+    id = NA
+  )
+  max_len = max(lengths(l_p_info))
+  length_1 = lengths(l_p_info) == 1
 
-  if(any(nchar(nm) == 0)){
-    names(tbl) <- make_df_colnames(tbl)
-    tbl <- tbl %>% slice(-1)
-  } else {
-    num_cols <- ncol(tbl)
-    if(length(unique(nm)) < num_cols){
-      names(tbl) <- make_df_colnames(tbl)
-      tbl <- tbl %>% slice(-1)
+  l_p_info[length_1] = lapply(l_p_info[length_1], function(x) {
+    rep(x, max_len)
+  })
+
+  if(!is.null(player_name)) {
+    if(is.null(first)) {
+      l_p_info$first = sub("\\s+.*$", "", player_name)
+    }
+
+    if(is.null(last)) {
+      l_p_info$last = sub(".*?\\s+", "", player_name)
     }
   }
-  return(tbl)
-}
-
-id_col <- function(x, match_col){
-  player_ids$id[match(x, player_ids[[match_col]])]
-}
 
 
-clean_format <- function(df){
-  formatted_num <- intersect(names(df), c("pass_yds", "rush_yds", "rec_yds", "xp_pct", "fg_pct"))
-  remove_format <- function(x)gsub("\\,|%", "", x)
-  if(length(formatted_num) > 0)
-    df <- df %>% mutate_at(formatted_num, remove_format)
-  return(df)
-}
+  l_p_info = Filter(Negate(is.null), l_p_info)
+  l_p_info = lapply(l_p_info, function(x) {
+    x = rename_vec(toupper(x), unlist(pos_corrections))
+    x = rename_vec(x, unlist(team_corrections))
+    x = gsub("\\s+(defense|jr|sr|[iv]+)\\.?$", "", tolower(x))
+    x = gsub("[[:punct:]]+|\\s+", "", x)
+    x
+  })
 
-match_by_col <- function(x, y, match_col, id_vars){
-  x_col <- x[[match_col]]
-  y_col <- y[[match_col]]
+  if(!is.null(id_col)) {
+    col_name = deparse(substitute(id_col))
+    if(grepl("$", col_name, fixed = TRUE)) {
+      col_name = sub(".+\\$", "", col_name)
+    }
+    l_p_info$id = player_ids$id[match(id_col, player_ids[[col_name]])]
 
-  x_dups <- x_col[duplicated(x_col)]
-  y_dups <- y_col[duplicated(y_col)]
-
-  val_match <- intersect(x_col[!(x_col %in% x_dups)], y_col[!(y_col %in% y_dups)])
-
-  xy_match <- inner_join(x[x[[match_col]] %in% val_match, c(match_col, id_vars[1])],
-                         y[y[[match_col]] %in% val_match, c(match_col, id_vars[2])],
-                         by = match_col) %>% select(id_vars)
-  return(xy_match)
-}
-
-clean_pname <- function(x){
-  gsub("[J|S]r\\.*$|[[:punct:]]|\\s",  "", x)
-}
-
-match_players <- function(x){
-  x <- mutate(x, pos = recode(pos, !!!pos_corrections), team = recode(team, !!!team_corrections),
-              player = gsub("\\s[JS]r\\.*|\\s[I|V]+$", "", player))
-  p_tbl <- player_table %>% unite("name", c("first_name", "last_name"), sep = " ") %>%
-    mutate(position = recode(position, !!!pos_corrections),
-           team = recode(team, !!!team_corrections),
-           name = gsub("\\s[JS]r\\.*|\\s[I|V]+$", "", name))
-
-  match_pos <- unique(x$pos)
-
-  p_tbl <- filter(p_tbl, position %in% match_pos) %>%
-    mutate(match_name = tolower(clean_pname(recode(name, !!!name_corrections ))),
-           match_name_pos = paste(match_name, tolower(position), sep = "-"),
-           match_name_pos_tm = paste(match_name_pos, tolower(team), sep = "-"))
-
-  x <- x %>%
-    mutate(match_name = tolower(clean_pname(recode(player, !!!name_corrections ))),
-           match_name_pos = paste(match_name, tolower(pos), sep = "-"),
-           match_name_pos_tm = paste(match_name_pos, tolower(team), sep = "-"))
-
-  x <- add_column(x, tmp_id = 1:nrow(x))
-
-  matched <- data.frame(tmp_id=as.integer(NA), id = as.character(NA), stringsAsFactors = FALSE)[-1,]
-
-  for(col in c("match_name_pos_tm", "match_name_pos", "match_name")){
-    x_tbl <- filter(x, !(x$tmp_id %in% matched$tmp_id))
-    y_tbl <- filter(p_tbl, !(p_tbl$id %in% matched$id))
-    match_ids <- match_by_col(x_tbl, y_tbl, col, c("tmp_id", "id"))
-    matched <- bind_rows(list(matched, match_ids))
+    if(!anyNA(l_p_info$id)) {
+      return(l_p_info$id)
+    }
   }
 
-  return(matched$id[match(x$tmp_id, matched$tmp_id)])
+  ref_table = player_table %>%
+    mutate(across(where(is.character), tolower)) %>%
+    transmute(id = id,
+              player_name = paste(first_name, last_name),
+              player_name = gsub("\\s+(defense|jr|sr|[iv]+)\\.?$", "", player_name),
+              player_name = gsub("[[:punct:]]|\\s+", "", player_name),
+              last = gsub("\\s+(defense|jr|sr|[iv]+)\\.?$", "", last_name),
+              last = gsub("[[:punct:]]|\\s+", "", last),
+              first = gsub("\\s+(defense|jr|sr|[iv]+)\\.?$", "", first_name),
+              first = gsub("[[:punct:]]|\\s+", "", first),
+              pos = rename_vec(toupper(position), unlist(pos_corrections)),
+              pos = tolower(pos),
+              team = rename_vec(toupper(team), unlist(team_corrections)),
+              team = tolower(team))
+
+  # If pos = DST, replace by team name
+  if("pos" %in% names(l_p_info)) {
+    l_p_info$id = ifelse(
+      l_p_info$pos == "dst",
+      ref_table$id[match(l_p_info$team, ref_table$team)],
+      l_p_info$id
+    )
+  }
+
+  col_combos = list(
+    c("player_name", "pos", "team"),
+    c("last", "pos", "team"),
+    c("player_name", "team"),
+    c("player_name", "pos"),
+    # c("last", "team"),
+    c("first", "pos", "team")
+  )
+  combo_idx = vapply(col_combos, function(x) {
+    all(x %in% names(l_p_info))
+  }, logical(1L))
+
+  for(combo in col_combos[combo_idx]) {
+    id_idx = is.na(l_p_info$id)
+
+    l_p_info_vec = do.call(paste0, l_p_info[combo])[id_idx]
+    ref_table_vec = do.call(paste0, ref_table[combo])
+
+    # Removing dups from reftable
+    ref_dups = ref_table_vec[duplicated(ref_table_vec)]
+    keep_in_ref = !ref_table_vec %in% ref_dups
+    ref_table_vec = ref_table_vec[keep_in_ref]
+
+
+    l = lapply(l_p_info_vec, function(y) {
+      which(ref_table_vec %in% y)
+    })
+    l[lengths(l) != 1] = NA_integer_
+    match_vec = unlist(l)
+
+    l_p_info$id[id_idx] = ref_table$id[keep_in_ref][match_vec]
+
+  }
+  l_p_info$id
+
+}
+
+get_scrape_year <- function(date) {
+  if(missing(date)) {
+    date = Sys.Date()
+  }
+  date = as.POSIXlt(date)
+  cal_year = date$year + 1900L
+  cal_month = date$mon + 1L
+
+  if(cal_month %in% 1:3) {
+    cal_year - 1L
+  } else {
+    cal_year
+  }
+}
+
+rename_vec = function(x, new_names, old_names = NULL) {
+  if(is.null(old_names)) {
+    old_names = names(new_names)
+    if(is.null(names(new_names))) {
+
+      message = paste0("Must supply old_names argument, or "
+                       , deparse(substitute(new_names))
+                       , " needs to be a named vector with the "
+                       , "old names  as the named portion")
+      stop(message)
+    }
+  }
+
+  idx = match(x, old_names)
+  x[!is.na(idx)] = new_names[omit_NA(idx)]
+  x
+}
+
+omit_NA = function(x) {
+  x[!is.na(x)]
+}
+
+row_sd = function(x, na.rm = FALSE) {
+  if(is.data.frame(x)) {
+    x = do.call(cbind, x)
+  }
+  dim_x = dim(x)
+
+  if(na.rm && anyNA(x)) {
+    n_minus_1 = dim_x[2] - .rowSums(is.na(x), dim_x[1], dim_x[2]) - 1L
+  } else {
+    n_minus_1 = dim_x[2] - 1
+  }
+
+  r_mean = .rowMeans(x, dim_x[1], dim_x[2], na.rm = na.rm)
+
+  r_var = .rowSums((x - r_mean)^2 / n_minus_1, dim_x[1], dim_x[2], na.rm = na.rm)
+  r_sd = sqrt(r_var)
+  r_sd[n_minus_1 <= 1] = NA
+  r_sd
+}
+
+impute_and_score_sources = function(data_result, scoring_rules) {
+  scoring_objs = make_scoring_tables(scoring_rules)
+
+  data_result = impute_via_rates_and_mean(data_result, scoring_objs)
+  data_result = impute_bonus_cols(data_result, scoring_objs$scoring_tables)
+
+  data_result[] = source_points(data_result, scoring_rules, return_data_result = TRUE)
+  data_result
 }
 
 
-available_sources <- function(period = c("season", "week")){
-  pos_group <- paste0(period, "_pos")
-  projection_sources %>% map_lgl(~ length(.x[[pos_group]]) > 0) %>%
-    which(.) %>% names()
-}
-
-available_position <- function(period = c("season", "week"), src = NULL){
-  pos_group <- paste0(period, "_pos")
-  if(is.null(src))
-    src <- available_sources(period)
-  else
-    src <- intersect(available_sources(period), src)
-
-  projection_sources[src] %>% map(`[[`, pos_group) %>% reduce(union)
+# Returns new player_id table
+update_player_id_table = function(player_id_table = NULL, id_column, value) {
 
 }
+
+get_pos_src_from_scrape = function(data_result) {
+  data_by_pos_src = lapply(data_result, function(x) {
+    split(x, x$data_src)
+  })
+  src_pos = stack(lapply(data_by_pos_src, names))
+  split(as.character(src_pos$ind), src_pos$values)
+}
+
+# TODO: This may be supersceeded by caching at the scrape level
+extract_src_scrapes_from_scrape = function(data_result) {
+  pos_src = get_pos_src_from_scrape(data_result)
+
+  lapply(setNames(names(pos_src), names(pos_src)), function(x) {
+    positions = setNames(pos_src[[x]], pos_src[[x]])
+    lapply(positions, function(pos) {
+      data_result[[pos]][data_result[[pos]]$data_src == x,]
+    })
+  })
+}
+
+
+
+
+# nflr_player_stats_df = nflreadr::load_player_stats(2023, "offense")
+# nflr_pbp_data = nflreadr::load_pbp(2023)
+# This accepts nflreadr data (e.g., above) and scoring
+actual_points_scoring = function(nflr_player_stats_df,
+                                 nflr_pbp_data,
+                                 scoring_rules = NULL,
+                                 vor_baseline = NULL,
+                                 rename_colums = TRUE) {
+
+  # Filling in missing arguments
+  if(is.null(scoring_rules)) {
+    scoring_rules = scoring
+  }
+  if(is.null(vor_baseline)) {
+    vor_baseline = default_baseline
+  }
+
+  # Make the nflr object match our scrape data structures to utilize our current
+  # scoring infrastructure (typically named `data_result` in internal functions)
+  nflr_actuals_attrs = attributes(nflr_player_stats_df)
+  stat_type = sub("^.*:\\s?", "", nflr_actuals_attrs$nflverse_type)
+
+  # Updating columns names to match our standard column names
+  if(isTRUE(stat_type == "offense")) {
+    names(nflr_player_stats_df) = rename_vec(names(nflr_player_stats_df), nflreadr_offense_cols)
+  }
+
+  scoring_objs = make_scoring_tables(scoring_rules)
+
+
+  # Calculating specific data from PBP data
+  # pass_40_yds, pass_300_yds, pass_350_yds, pass_400_yds
+  # rush_40_yds, rush_100_yds, rush_150_yds, rush_200_yds
+  # rec_40_yds, rec_100_yds, rec_150_yds, rec_200_yds
+  df_pass_40_yds = nflr_pbp_data %>%
+    dplyr::filter(!is.na(passer_player_id)) %>%
+    dplyr::group_by(season_year = season, week, gsis_id = passer_player_id) %>%
+    dplyr::summarise(pass_40_yds = sum(passing_yards >= 40, na.rm = TRUE)) %>%
+    dplyr::ungroup()
+
+  df_rush_40_yds = nflr_pbp_data %>%
+    dplyr::filter(!is.na(rusher_player_id)) %>%
+    dplyr::group_by(season_year = season, week, gsis_id = rusher_player_id) %>%
+    dplyr::summarise(rush_40_yds = sum(rushing_yards >= 40, na.rm = TRUE)) %>%
+    dplyr::ungroup()
+
+  df_rec_40_yds = nflr_pbp_data %>%
+    dplyr::filter(!is.na(receiver_player_id)) %>%
+    dplyr::group_by(season_year = season, week, gsis_id = rusher_player_id) %>%
+    dplyr::summarise(rush_40_yds = sum(receiving_yards >= 40, na.rm = TRUE)) %>%
+    dplyr::ungroup()
+
+  df_return_yds = nflr_pbp_data %>%
+    dplyr::mutate(gsis_id = dplyr::coalesce(punt_returner_player_id, kickoff_returner_player_name)) %>%
+    dplyr::filter(!is.na(gsis_id)) %>%
+    dplyr::group_by(season_year = season, week, gsis_id) %>%
+    dplyr::summarise(return_yds = sum(return_yards, na.rm = TRUE))
+
+  nflr_player_stats_df = nflr_player_stats_df %>%
+    dplyr::left_join(df_pass_40_yds, c("season_year", "week", "gsis_id")) %>%
+    dplyr::left_join(df_rush_40_yds, c("season_year", "week", "gsis_id")) %>%
+    dplyr::left_join(df_rec_40_yds, c("season_year", "week", "gsis_id")) %>%
+    dplyr::full_join(df_return_yds, c("season_year", "week", "gsis_id")) %>%
+    dplyr::mutate(
+      pass_inc = pass_att - pass_comp,
+      pass_comp_pct = round(pass_comp / pass_att, 5),
+      fumbles = rowSums(dplyr::pick(pass_sack_fumbles,  rush_fumbles,  rec_fumbles), na.rm = TRUE),
+      two_pts = rowSums(dplyr::pick(pass_two_pts, rush_two_pts, rec_two_pts), na.rm = TRUE),
+      pass_300_yds = as.integer(pass_yds >= 300, na.rm = TRUE),
+      pass_350_yds = as.integer(pass_yds >= 350, na.rm = TRUE),
+      pass_400_yds = as.integer(pass_yds >= 400, na.rm = TRUE),
+      rush_100_yds = as.integer(rush_yds >= 100, na.rm = TRUE),
+      rush_150_yds = as.integer(rush_yds >= 150, na.rm = TRUE),
+      rush_200_yds = as.integer(rush_yds >= 200, na.rm = TRUE),
+      rec_100_yds = as.integer(rec_yds >= 100, na.rm = TRUE),
+      rec_150_yds = as.integer(rec_yds >= 150, na.rm = TRUE),
+      rec_200_yds = as.integer(rec_yds >= 200, na.rm = TRUE)
+    )
+
+  data_result = split.data.frame(nflr_player_stats_df, nflr_player_stats_df$pos)
+  attr(data_result, "season") = unique(nflr_player_stats_df$season_year)
+
+  if(length(unique(nflr_player_stats_df$week)) > 1) {
+    attr(data_result, "week") = 1
+  } else {
+    attr(data_result, "week") = unique(nflr_player_stats_df$week)
+  }
+
+  data_result[] = source_points(data_result, scoring_rules, return_data_result = TRUE)
+
+  nflr_player_stats_df = dplyr::bind_rows(data_result)
+
+  attr(nflr_player_stats_df, "nflfastR_version") = nflr_actuals_attrs$nflfastR_version
+  attr(nflr_player_stats_df, ".internal.selfref") = nflr_actuals_attrs$.internal.selfref
+  attr(nflr_player_stats_df, "class") = nflr_actuals_attrs$class
+  attr(nflr_player_stats_df, "nflverse_type") = nflr_actuals_attrs$nflverse_type
+  attr(nflr_player_stats_df, "nflverse_timestamp") = nflr_actuals_attrs$nflverse_timestamp
+
+  if(isFALSE(rename_colums)) {
+    switch_back_names = setNames(names(nflreadr_offense_cols), nflreadr_offense_cols)
+
+    names(nflr_player_stats_df) = rename_vec(names(nflr_player_stats_df), switch_back_names)
+  }
+  nflr_player_stats_df
+
+}
+
+
+
 
 
